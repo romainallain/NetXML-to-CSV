@@ -35,17 +35,17 @@ def run(mac_parser):
             print "[+] Parsing '%s'." % input_file_name
             # parsing netxml for access points
             sys.stdout.write("[+] Outputting Access Points to '%s' " % output_AP_filename)
-            output_AP_handler.write("BSSID,MACVendor,Channel,Privacy,Cypher,Auth,PowerMin,PowerMax,ESSID,Clients,Lat,Lon\n")
+            output_AP_handler.write("BSSID,MACVendor,Channel,Privacy,Cypher,Auth,PowerMin,PowerMax,ESSID,Clients,DateMin,DateMax,Datasize,Lat,Lon\n")
             result, clients = parse_net_xml(doc,mac_parser)
             output_AP_handler.write(result)
             sys.stdout.write(" Complete.\r\n")
 
             # using gathered results for clients
             sys.stdout.write("[+] Outputting Clients to '%s' " % output_clients_filename)
-            output_clients_handler.write("ClientMAC,MACVendor,Power,BSSID,ESSID\n")
+            output_clients_handler.write("ClientMAC,MACVendor,PowerMax,BSSID,ESSID\n")
             for client_list in clients:
                 for client in client_list:
-                    output_clients_handler.write("%s,%s,%s,%s\n" % (client[0], client[1], client[2], client[3]))
+                    output_clients_handler.write('"%s","%s","%s","%s","%s"\n' % (client[0], client[1], client[2], client[3], client[4]))
             sys.stdout.write(" Complete.\r\n")
 
 def parse_net_xml(doc,mac_parser):
@@ -59,7 +59,7 @@ def parse_net_xml(doc,mac_parser):
     for network in doc.getiterator("wireless-network"):
         count += 1
         if (count % tenth) == 0:
-            sys.stdout.write(".")
+            sys.stdout.write(".") # ETA calculation
         type = network.attrib["type"]
 
         # Channel
@@ -134,6 +134,13 @@ def parse_net_xml(doc,mac_parser):
             lat = network.find('gps-info').find('avg-lat').text
             lon = network.find('gps-info').find('avg-lon').text
 
+        # Date mix/max
+        datemin = network.attrib['first-time']
+        datemax = network.attrib['last-time']
+
+        # Datasize
+        datasize = network.find('datasize').text
+
         # Clients parsing
         clients_seen = 0
         c_list = associatedClients(network, bssid, essid_text)
@@ -142,7 +149,7 @@ def parse_net_xml(doc,mac_parser):
             clients_seen = len(c_list)
 
         # Write results string
-        result += "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" % (bssid, macinfo, channel, privacy, cipher, auth, dbmmin, dbmmax, essid_text, clients_seen, lat, lon)
+        result += '"%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s"\n' % (bssid, macinfo, channel, privacy, cipher, auth, dbmmin, dbmmax, essid_text, clients_seen, datemin, datemax, datasize, lat, lon)
 
     return result, clients
 
