@@ -2,20 +2,28 @@
 from lxml import etree
 import os
 import sys
+import manuf
 
-def run():
-    print "[*] NETXML to CSV Converter by Meatballs"
+def run(mac_parser):
+    print "[*] NETXML to CSV Converter"
 
     if len(sys.argv) != 3:
         print "[*] Usage: %s input output" % sys.argv[0]
     else:
-        output_file_name = sys.argv[2]
         input_file_name = sys.argv[1]
-        if input_file_name != output_file_name:
+        output_base_filename = sys.argv[2]
+        output_AP_filename = output_base_filename + '_ap.csv'
+        output_clients_filename = output_base_filename + '_clients.csv'
+        if input_file_name != output_base_filename:
             try:
-                output = file(output_file_name, 'w')
+                output_AP_handler = file(output_AP_filename, 'w')
             except:
-                print "[-] Unable to create output file '%s' for writing." % output_file_name
+                print "[-] Unable to create output file '%s' for writing." % output_AP_filename
+                exit()
+            try:
+                output_clients_handler = file(output_clients_filename, 'w')
+            except:
+                print "[-] Unable to create output file '%s' for writing." % output_clients_filename
                 exit()
 
             try:
@@ -25,18 +33,22 @@ def run():
                 exit()
 
             print "[+] Parsing '%s'." % input_file_name
-            sys.stdout.write("[+] Outputting to '%s' " % output_file_name)
-            output.write("BSSID,Channel,Privacy,Ciper,Auth,Power,ESSID,Lat,Lon\n")
-            result, clients = parse_net_xml(doc)
-            output.write(result)
-            output.write("\n")
-            output.write("ClientMAC, Power, BSSID, ESSID\n")
-            for client_list in clients:
-                for client in client_list:
-                    output.write("%s,%s,%s,%s\n" % (client[0], client[1], client[2], client[3]))
+            # parsing netxml for access points
+            sys.stdout.write("[+] Outputting Access Points to '%s' " % output_AP_filename)
+            output_AP_handler.write("BSSID,MACVendor,Channel,Privacy,Cypher,Auth,PowerMin,PowerMax,ESSID,Clients,Lat,Lon\n")
+            result, clients = parse_net_xml(doc,mac_parser)
+            output_AP_handler.write(result)
             sys.stdout.write(" Complete.\r\n")
 
-def parse_net_xml(doc):
+            # using gathered results for clients
+            sys.stdout.write("[+] Outputting Clients to '%s' " % output_clients_filename)
+            output_clients_handler.write("ClientMAC,MACVendor,Power,BSSID,ESSID\n")
+            for client_list in clients:
+                for client in client_list:
+                    output_clients_handler.write("%s,%s,%s,%s\n" % (client[0], client[1], client[2], client[3]))
+            sys.stdout.write(" Complete.\r\n")
+
+def parse_net_xml(doc,mac_parser):
     result = ""
 
     total = len(list(doc.getiterator("wireless-network")))
@@ -49,12 +61,23 @@ def parse_net_xml(doc):
         if (count % tenth) == 0:
             sys.stdout.write(".")
         type = network.attrib["type"]
-        channel = network.find('channel').text
-        bssid = network.find('BSSID').text
 
+        # Channel
+        channel = network.find('channel').text
+        
+        # MAC Address (BSSID)
+        bssid = network.find('BSSID').text
+        
+        # MAC Address details (using Manuf.py)
+        macinfo = mac_parser.get_comment(bssid)
+        if macinfo is None:
+            macinfo = 'N/A'
+
+        # Skip probes or 0 channel
         if type == "probe" or channel == "0":
             continue
-
+        
+        # Encryption data parsing
         encryption = network.getiterator('encryption')
         privacy = ""
         cipher = ""
@@ -84,35 +107,42 @@ def parse_net_xml(doc):
         if cipher.find("TKIP") > -1:
             privacy += "WPA"
 
-
+        # Signal strength information
         power = network.find('snr-info')
-        dbm = ""
+        dbmmin, dbmmmax = "", ""
+
         if power is not None:
-            dbm = power.find('max_signal_dbm').text
+            dbmmax = power.find('max_signal_dbm').text
+            dbmmin = power.find('min_signal_dbm').text
 
-        if int(dbm) > 1:
-            dbm = power.find('last_signal_dbm').text
+        #if int(dbm) > 1:
+        #    dbm = power.find('last_signal_dbm').text
 
-        if int(dbm) > 1:
-            dbm = power.find('min_signal_dbm').text
+        #if int(dbm) > 1:
+        #    dbm = power.find('min_signal_dbm').text
 
+        # ESSID information
         ssid = network.find('SSID')
         essid_text = ""
         if ssid is not None:
             essid_text = network.find('SSID').find('essid').text
 
+        # GPS (LAT/LON) information
         gps = network.find('gps-info')
         lat, lon = '', ''
         if gps is not None:
             lat = network.find('gps-info').find('avg-lat').text
             lon = network.find('gps-info').find('avg-lon').text
 
-        # print "%s,%s,%s,%s,%s,%s,%s\n" % (bssid, channel, privacy, cipher, auth, dbm, essid_text)
-        result += "%s,%s,%s,%s,%s,%s,%s,%s,%s\n" % (bssid, channel, privacy, cipher, auth, dbm, essid_text, lat, lon)
-
+        # Clients parsing
+        clients_seen = 0
         c_list = associatedClients(network, bssid, essid_text)
         if c_list is not None:
             clients.append(c_list)
+            clients_seen = len(c_list)
+
+        # Write results string
+        result += "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" % (bssid, macinfo, channel, privacy, cipher, auth, dbmmin, dbmmax, essid_text, clients_seen, lat, lon)
 
     return result, clients
 
@@ -123,17 +153,29 @@ def associatedClients(network, bssid, essid_text):
         client_info = list()
         for client in clients:
             mac = client.find('client-mac')
-            if mac is not None:
+            # Kismet shows access point itself as a client, so we remove them
+            if mac is not None and mac.text != bssid:
+                # Client MAC info
                 client_mac = mac.text
+
+                # MAC Address details (using Manuf.py)
+                macinfo = mac_parser.get_comment(bssid)
+                if macinfo is None:
+                    macinfo = 'N/A'
+
+                # Client Power info
                 snr = client.find('snr-info')
                 if snr is not None:
                     power = client.find('snr-info').find('max_signal_dbm')
                     if power is not None:
                         client_power = power.text
-                        c = client_mac, client_power, bssid, essid_text
+                        c = client_mac, macinfo, client_power, bssid, essid_text
                         client_info.append(c)
 
         return client_info
 
 if __name__ == "__main__":
-      run()
+    # Start Manuf.py
+    mac_parser = manuf.MacParser('/etc/manuf')
+    # Start main XML loop
+    run(mac_parser)
